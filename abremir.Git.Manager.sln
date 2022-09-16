@@ -1,0 +1,32 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.3.32901.215
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{9A19103F-16F7-4668-BE54-9A1E7A4F7556}") = "abremir.Git.Manager", "abremir.Git.Manager\abremir.Git.Manager.csproj", "{7085891E-790C-4483-B30A-067E8E688448}"
+EndProject
+Project("{2150E333-8FDC-42A3-9474-1A3956D46DE8}") = "Solution Items", "Solution Items", "{3D03B3FF-8B66-4065-89F9-CB6B207753ED}"
+	ProjectSection(SolutionItems) = preProject
+		.gitignore = .gitignore
+		LICENSE = LICENSE
+		README.md = README.md
+	EndProjectSection
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7085891E-790C-4483-B30A-067E8E688448}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7085891E-790C-4483-B30A-067E8E688448}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7085891E-790C-4483-B30A-067E8E688448}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7085891E-790C-4483-B30A-067E8E688448}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {E61C7A83-9F79-4DC7-BF78-56ACD676E153}
+	EndGlobalSection
+EndGlobal
