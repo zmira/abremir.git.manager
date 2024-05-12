@@ -343,7 +343,7 @@ namespace abremir.Git.Manager
 
             ResetLogWindow();
 
-            StartProcesing(CommandType.LoadRepositories);
+            StartProcessing(CommandType.LoadRepositories);
 
             if (!await RepositoryManagerHandlers.LoadRepos(RepositoryTree, BasePath!))
             {
@@ -494,7 +494,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.CheckoutSelectedBranch);
+            StartProcessing(CommandType.CheckoutSelectedBranch);
 
             await RepositoryManagerHandlers.CheckoutSelectedBranch(RepositoryTree);
 
@@ -509,7 +509,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.DeleteSelectedBranch);
+            StartProcessing(CommandType.DeleteSelectedBranch);
 
             await RepositoryManagerHandlers.DeleteSelectedBranch(RepositoryTree);
 
@@ -570,7 +570,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.FetchForSelectedRepository);
+            StartProcessing(CommandType.FetchForSelectedRepository);
 
             await RepositoryManagerHandlers.FetchForSelectedRepository(RepositoryTree);
 
@@ -585,7 +585,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.FetchForAllRepositories);
+            StartProcessing(CommandType.FetchForAllRepositories);
 
             await RepositoryManagerHandlers.FetchForAllRepositories(RepositoryTree);
 
@@ -600,7 +600,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.PullForSelectedRepository);
+            StartProcessing(CommandType.PullForSelectedRepository);
 
             await RepositoryManagerHandlers.PullForSelectedRepository(RepositoryTree);
 
@@ -621,7 +621,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.PullForAllRepositories);
+            StartProcessing(CommandType.PullForAllRepositories);
 
             await RepositoryManagerHandlers.PullForAllRepositories(RepositoryTree);
 
@@ -642,7 +642,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.ResetSelectedBranch);
+            StartProcessing(CommandType.ResetSelectedBranch);
 
             await RepositoryManagerHandlers.ResetSelectedBranch(RepositoryTree);
 
@@ -662,7 +662,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.RetrieveStatusForSelectedRepository);
+            StartProcessing(CommandType.RetrieveStatusForSelectedRepository);
 
             await RepositoryManagerHandlers.RetrieveStatusForSelectedRepository(RepositoryTree);
 
@@ -677,7 +677,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.RetrieveStatusForAllRepositories);
+            StartProcessing(CommandType.RetrieveStatusForAllRepositories);
 
             await RepositoryManagerHandlers.RetrieveStatusForAllRepositories(RepositoryTree);
 
@@ -692,7 +692,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.UpdateSelectedRepository);
+            StartProcessing(CommandType.UpdateSelectedRepository);
 
             await RepositoryManagerHandlers.FetchForSelectedRepository(RepositoryTree);
             await RepositoryManagerHandlers.PullForSelectedRepository(RepositoryTree);
@@ -708,7 +708,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.UpdateAllRepositories);
+            StartProcessing(CommandType.UpdateAllRepositories);
 
             ResetLogWindow();
             await RepositoryManagerHandlers.FetchForAllRepositories(RepositoryTree);
@@ -726,7 +726,7 @@ namespace abremir.Git.Manager
                 return;
             }
 
-            StartProcesing(CommandType.ViewChangesInSelectedRepository);
+            StartProcessing(CommandType.ViewChangesInSelectedRepository);
 
             var repositoryNode = RepositoryTree.SelectedObject;
 
@@ -792,7 +792,7 @@ namespace abremir.Git.Manager
             RepositoryTree.AddObjects(objects);
         }
 
-        private static void StartProcesing(CommandType commandType)
+        private static void StartProcessing(CommandType commandType)
         {
             Processing = true;
 
