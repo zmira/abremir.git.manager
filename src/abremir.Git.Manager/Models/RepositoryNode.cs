@@ -41,7 +41,7 @@ namespace abremir.Git.Manager.Models
                         TrackingDetails = new BranchTrackingDetails(branch.TrackingDetails.BehindBy, branch.TrackingDetails.AheadBy)
                     };
                 })
-                .ToList() ?? new List<BranchNode>();
+                .ToList() ?? [];
         }
     }
 }

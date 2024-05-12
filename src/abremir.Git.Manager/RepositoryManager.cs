@@ -17,7 +17,7 @@ namespace abremir.Git.Manager
         private static TextView? LogsView;
         private static readonly BlockingCollection<LogItem> Logs = new(new ConcurrentQueue<LogItem>());
         private static bool Processing;
-        private static List<ActionableCommand> ActionableCommands = new();
+        private static List<ActionableCommand> ActionableCommands = [];
         private static string? BasePath;
         private static Label? ProcessingLabel;
         private static Label? SpinnerLabel;
@@ -25,7 +25,7 @@ namespace abremir.Git.Manager
         private static CheckBox? FilterByDirty;
         private static CheckBox? FilterByBehind;
         private static CheckBox? FilterByError;
-        private static IEnumerable<ITreeNode> OriginalNodeList = Array.Empty<ITreeNode>();
+        private static IEnumerable<ITreeNode> OriginalNodeList = [];
 
         private const string GitRepoManagerWindowTitle = "abremir.git.manager";
 
@@ -741,7 +741,7 @@ namespace abremir.Git.Manager
 
             EndProcessing();
 
-            Application.Run(new RepositoryChangesViewer((repositoryNode as RepositoryNode)!.RepositoryName, changedItems.OrderBy(item => item.Path).ToList()));
+            Application.Run(new RepositoryChangesViewer((repositoryNode as RepositoryNode)!.RepositoryName, [.. changedItems.OrderBy(item => item.Path)]));
         }
 
         private static void ChangeBaseDirectory()
@@ -856,8 +856,8 @@ namespace abremir.Git.Manager
 
         private static void LoadActionableCommands()
         {
-            ActionableCommands = new List<ActionableCommand>
-            {
+            ActionableCommands =
+            [
                 // branch specific commands
                 new(CommandType.CheckoutSelectedBranch, Target.BranchNode, "Checkout selected branch", Key.c, () => CheckoutSelectedBranch()),
                 new(CommandType.ResetSelectedBranch, Target.BranchNode, "Reset selected branch", Key.r, () => ResetSelectedBranch()),
@@ -885,7 +885,7 @@ namespace abremir.Git.Manager
                 new(CommandType.ResetLogWindow, Target.RepositoryWindow | Target.LogWindow, "Reset Log Window", Key.CtrlMask | Key.J, () => ResetLogWindow()),
                 new(CommandType.ChangeBaseDirectory, Target.RepositoryWindow | Target.LogWindow, "Change base directory", Key.CtrlMask | Key.O, () => ChangeBaseDirectory()),
                 new(CommandType.ShowHelp, Target.RepositoryWindow | Target.LogWindow, "Show help", Key.CtrlMask | Key.H, () => ShowHelp())
-            };
+            ];
 
             var key = Key.CtrlMask | (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? Key.C : Key.Y);
             ActionableCommands.Insert(0, new(CommandType.CopyPathToClipboard, Target.RepositoryNode, "Copy repository path to clipboard", key, () => CopySelectedRepositoryPathToClipboard()));

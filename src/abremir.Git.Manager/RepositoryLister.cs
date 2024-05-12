@@ -28,7 +28,7 @@ namespace abremir.Git.Manager
 
             var subdirectories = Directory.GetDirectories(baseFolder, "*", new EnumerationOptions { IgnoreInaccessible = true })
                 .Where(directory => !Path.GetFileName(directory)!.StartsWith("."));
-            foreach (var subdirectory in subdirectories ?? Enumerable.Empty<string>())
+            foreach (var subdirectory in subdirectories ?? [])
             {
                 repoList.AddRange(ListRepos(subdirectory));
             }
