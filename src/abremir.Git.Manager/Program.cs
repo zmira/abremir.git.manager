@@ -22,10 +22,7 @@ rootCommand.SetHandler((string path) =>
 {
     path ??= Environment.CurrentDirectory;
 
-    RepositoryManager.UiInitialized += (_, __) =>
-    {
-        Spinner.Start($"Searching for git repositories in {path}", () => RepositoryManager.LoadRepositories(path), Patterns.Dots);
-    };
+    RepositoryManager.UiInitialized += (_, __) => Spinner.Start($"Searching for git repositories in {path}", () => RepositoryManager.LoadRepositories(path), Patterns.Dots);
 
     Application.Run<RepositoryManager>();
 }, pathOption);
