@@ -298,7 +298,7 @@ namespace abremir.Git.Manager
                 || !tree.IsExpanded(tree.GetParent(selectedNode))
                 || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
             {
-                if ((selectedNode as BranchNode)?.IsCurrentRepositoryHead == true)
+                if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
                 {
                     RepositoryManager.LogError($"Checkout branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Branch already checked-out");
                 }
@@ -345,7 +345,7 @@ namespace abremir.Git.Manager
                 || !tree.IsExpanded(tree.GetParent(selectedNode))
                 || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
             {
-                if ((selectedNode as BranchNode)?.IsCurrentRepositoryHead == true)
+                if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
                 {
                     RepositoryManager.LogError($"Delete branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Cannot delete branch while it is the repository HEAD");
                 }
