@@ -211,8 +211,8 @@ namespace abremir.Git.Manager
 
             var statusBarItems = new StatusItem[]
             {
-                new StatusItem(Key.CtrlMask | Key.Q, "~^Q~ Quit", () => Application.RequestStop()),
-                new StatusItem(Key.CtrlMask | Key.H, "~^H~ Show help", () => ShowHelp())
+                new(Key.CtrlMask | Key.Q, "~^Q~ Quit", () => Application.RequestStop()),
+                new(Key.CtrlMask | Key.H, "~^H~ Show help", () => ShowHelp())
             };
 
             var statusBar = new StatusBar(statusBarItems);
