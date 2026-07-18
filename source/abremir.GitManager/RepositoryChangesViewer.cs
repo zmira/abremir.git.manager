@@ -1,10 +1,10 @@
 using System.Collections.ObjectModel;
-using abremir.Git.Manager.Models;
+using abremir.GitManager.Models;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal class RepositoryChangesViewer : Dialog
 {

@@ -1,9 +1,9 @@
 using System.Collections.Concurrent;
 using System.Diagnostics;
-using abremir.Git.Manager.Models;
+using abremir.GitManager.Models;
 using LibGit2Sharp;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal static class RepositoryActions
 {

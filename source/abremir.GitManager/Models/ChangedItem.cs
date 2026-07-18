@@ -1,6 +1,6 @@
 using LibGit2Sharp;
 
-namespace abremir.Git.Manager.Models;
+namespace abremir.GitManager.Models;
 
 internal record struct ChangedItem(string Path, ChangeKind Status, string Patch)
 {

@@ -1,6 +1,6 @@
 using LibGit2Sharp;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal static class RepositoryLister
 {

@@ -1,6 +1,8 @@
-﻿# abremir.git.manager
+﻿# abremir.GitManager
 
 A simple terminal UI app to help running git commands against multiple repositories, in bulk.
+
+![abremir.GitManager](./assets/abremir.GitManager.png)
 
 ## Motivation
 

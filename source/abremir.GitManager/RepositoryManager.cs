@@ -2,13 +2,13 @@ using System.Collections.Concurrent;
 using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
 using System.Text;
-using abremir.Git.Manager.Models;
+using abremir.GitManager.Models;
 using Terminal.Gui.Drawing;
 using Terminal.Gui.Input;
 using Terminal.Gui.ViewBase;
 using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal partial class RepositoryManager : Window
 {
@@ -25,7 +25,7 @@ internal partial class RepositoryManager : Window
     private readonly CheckBox _filterByError;
     private IEnumerable<ITreeNode> _originalNodeList = [];
 
-    private const string GitRepoManagerWindowTitle = "abremir.git.manager";
+    private const string GitRepoManagerWindowTitle = "abremir.GitManager";
 
     internal static List<ActionableCommand> ActionableCommands = [];
 

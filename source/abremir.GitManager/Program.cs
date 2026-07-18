@@ -1,6 +1,6 @@
 using System.CommandLine;
 using System.Diagnostics;
-using abremir.Git.Manager;
+using abremir.GitManager;
 using Kurukuru;
 using Terminal.Gui.App;
 using Terminal.Gui.Configuration;
@@ -37,5 +37,3 @@ rootCommand.SetAction(async parseResult =>
 });
 
 await rootCommand.Parse(args).InvokeAsync();
-
-Console.Clear();

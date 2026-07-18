@@ -1,4 +1,4 @@
-namespace abremir.Git.Manager.Models;
+namespace abremir.GitManager.Models;
 
 internal enum CommandType
 {
