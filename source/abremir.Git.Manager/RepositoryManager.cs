@@ -1,894 +1,607 @@
-﻿using System.Collections.Concurrent;
+using System.Collections.Concurrent;
+using System.Collections.ObjectModel;
 using System.Runtime.InteropServices;
 using System.Text;
 using abremir.Git.Manager.Models;
-using Terminal.Gui;
-using Terminal.Gui.Trees;
+using Terminal.Gui.Drawing;
+using Terminal.Gui.Input;
+using Terminal.Gui.ViewBase;
+using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager
+namespace abremir.Git.Manager;
+
+internal partial class RepositoryManager : Window
 {
-    internal class RepositoryManager : Toplevel
+    public static event EventHandler<EventArgs>? UiInitialized;
+
+    private readonly FrameView _repositoryWindow;
+    private readonly TreeView _repositoryTree;
+    private readonly ScrollableCode _logWindow;
+    private readonly ConcurrentQueue<LogItem> _logQueue = [];
+    private bool _processing;
+    private string? _basePath;
+    private readonly CheckBox _filterByDirty;
+    private readonly CheckBox _filterByBehind;
+    private readonly CheckBox _filterByError;
+    private IEnumerable<ITreeNode> _originalNodeList = [];
+
+    private const string GitRepoManagerWindowTitle = "abremir.git.manager";
+
+    internal static List<ActionableCommand> ActionableCommands = [];
+
+    public RepositoryManager()
     {
-        public static event EventHandler<EventArgs>? UiInitialized;
+        LoadActionableCommands();
 
-        private static Window? RepositoryWindow;
-        private static TreeView? RepositoryTree;
-        private static Window? LogsWindow;
-        private static TextView? LogsView;
-        private static readonly BlockingCollection<LogItem> Logs = new(new ConcurrentQueue<LogItem>());
-        private static bool Processing;
-        private static List<ActionableCommand> ActionableCommands = [];
-        private static string? BasePath;
-        private static Label? ProcessingLabel;
-        private static Label? SpinnerLabel;
-        private static ScrollBarView? TreeScrollBar;
-        private static CheckBox? FilterByDirty;
-        private static CheckBox? FilterByBehind;
-        private static CheckBox? FilterByError;
-        private static IEnumerable<ITreeNode> OriginalNodeList = [];
-
-        private const string GitRepoManagerWindowTitle = "abremir.git.manager";
-
-        public RepositoryManager()
+        _repositoryWindow = new()
         {
-            LoadActionableCommands();
+            Title = GitRepoManagerWindowTitle,
+            Width = Dim.Fill(),
+            Height = Dim.Fill(1),
+            BorderStyle = LineStyle.Rounded,
+        };
 
-            ColorScheme = new ColorScheme
+        var filterFrame = new FrameView
+        {
+            Height = 1,
+            Width = Dim.Fill(),
+            BorderStyle = LineStyle.None,
+        };
+        filterFrame.Margin.Thickness = Thickness.Empty;
+
+        var filterLabel = new Label
+        {
+            Text = "Filter by:",
+            X = 2,
+        };
+
+        filterFrame.Add(filterLabel);
+
+        _filterByDirty = new CheckBox
+        {
+            Text = "Dirty (*)",
+            X = Pos.Right(filterLabel) + 2,
+        };
+
+        filterFrame.Add(_filterByDirty);
+
+        _filterByBehind = new CheckBox
+        {
+            Text = "Behind (↓)",
+            X = Pos.Right(_filterByDirty) + 2,
+        };
+
+        filterFrame.Add(_filterByBehind);
+
+        _filterByError = new CheckBox
+        {
+            Text = "Error",
+            X = Pos.Right(_filterByBehind) + 2,
+        };
+
+        filterFrame.Add(_filterByError);
+
+        _repositoryWindow.Add(filterFrame);
+
+        var line = new Line
+        {
+            Y = Pos.Bottom(filterFrame)
+        };
+
+        _repositoryWindow.Add(line);
+
+        _repositoryTree = new TreeView
+        {
+            Y = Pos.Bottom(line),
+            Width = Dim.Fill(),
+            Height = Dim.Fill(),
+            AllowLetterBasedNavigation = false,
+        };
+        _repositoryTree.ViewportSettings |= ViewportSettingsFlags.HasScrollBars;
+        _repositoryTree.KeyBindings.Remove(Key.CursorRight);
+        _repositoryTree.KeyBindings.Remove(Key.CursorLeft);
+        _repositoryTree.KeyBindings.Remove(Key.CursorRight.WithCtrl);
+        _repositoryTree.KeyBindings.Remove(Key.CursorLeft.WithCtrl);
+
+        _repositoryTree.Style.ExpandableSymbol = new Rune('►');
+        _repositoryTree.Style.CollapseableSymbol = new Rune('▼');
+
+        var repositoryTreeContextMenu = new PopoverMenu([]);
+
+        MenuItem[] GetContextMenuItems()
+        {
+            var repositoryNode = _repositoryTree!.SelectedObject;
+            var branchNodeIsSelected = repositoryNode is BranchNode && _repositoryTree.IsExpanded(_repositoryTree.GetParent(repositoryNode));
+            var selectedNodeIsVisible = branchNodeIsSelected || repositoryNode is RepositoryNode;
+
+            if (branchNodeIsSelected)
             {
-                Focus = Application.Driver.MakeAttribute(Color.Black, Color.White),
-                Normal = Application.Driver.MakeAttribute(Color.White, Color.Black),
-                HotFocus = Application.Driver.MakeAttribute(Color.Black, Color.White),
-                HotNormal = Application.Driver.MakeAttribute(Color.BrightGreen, Color.Black)
-            };
+                repositoryNode = _repositoryTree.GetParent(repositoryNode);
+            }
 
-            RepositoryWindow = new Window(GitRepoManagerWindowTitle)
+            var isDirty = selectedNodeIsVisible && (repositoryNode as RepositoryNode)!.Status?.IsDirty == true;
+
+            return
+            [
+                .. ActionableCommands.Where(
+                    command => branchNodeIsSelected && command.Target.HasFlag(Target.BranchNode)).Select(
+                        command => new MenuItem(command.Description, null, command.Action, command.Shortcut)),
+                .. ActionableCommands.Where(
+                    command => selectedNodeIsVisible && command.Target.HasFlag(Target.RepositoryNode) && command.Type is not CommandType.ViewChangesInSelectedRepository).Select(
+                        command => new MenuItem(command.Description, null, command.Action, command.Shortcut)),
+                .. ActionableCommands.Where(
+                    command => isDirty && command.Type is CommandType.ViewChangesInSelectedRepository).Select(
+                        command => new MenuItem(command.Description, null, command.Action, command.Shortcut)),
+                .. ActionableCommands.Where(
+                    command => command.Target.HasFlag(Target.RepositoryWindow)).Select(
+                        command => new MenuItem(command.Description, null, command.Action, command.Shortcut)),
+            ];
+        }
+
+        _repositoryTree.MouseEvent += (_, e) =>
+        {
+            if (e.Flags.HasFlag(MouseFlags.RightButtonPressed))
             {
-                Width = Dim.Fill(),
-                Height = Dim.Fill(1),
-                ColorScheme = ColorScheme
-            };
+                repositoryTreeContextMenu.Root = new Menu(GetContextMenuItems());
+                repositoryTreeContextMenu.MakeVisible(e.ScreenPosition);
+                e.Handled = true;
+            }
+        };
 
-            var filterFrame = new FrameView
+        _repositoryWindow.Add(_repositoryTree);
+
+        Add(_repositoryWindow);
+
+        var statusBarItems = new Shortcut[]
+        {
+            new(Key.Q.WithAlt, "_Quit", () => App!.RequestStop()),
+            new(Key.H.WithAlt, "_Help", () => ShowHelp())
+        };
+
+        var statusBar = new StatusBar(statusBarItems);
+
+        Add(statusBar);
+
+        _logWindow = new()
+        {
+            Title = "logs",
+            Y = Pos.Bottom(_repositoryWindow),
+            Width = Dim.Fill(),
+            Height = 10,
+            Visible = false,
+            BorderStyle = LineStyle.Rounded,
+            SyntaxHighlighter = null,
+        };
+
+        var logsViewContextMenu = new PopoverMenu([
+            .. ActionableCommands.Where(
+                command => command.Target.HasFlag(Target.LogWindow)).Select(
+                    command => new MenuItem(command.Description, null, command.Action, command.Shortcut))]);
+
+        _logWindow.MouseEvent += (_, e) =>
+        {
+            if (e.Flags.HasFlag(MouseFlags.RightButtonPressed))
             {
-                Height = 1,
-                Width = Dim.Fill(),
-                ColorScheme = Colors.Menu
-            };
-            filterFrame.Border.BorderStyle = BorderStyle.None;
-            filterFrame.Border.DrawMarginFrame = false;
+                logsViewContextMenu.MakeVisible(e.ScreenPosition);
+                e.Handled = true;
+            }
+        };
 
-            var filterLabel = new Label("Filter by:")
+        Add(_logWindow);
+
+        _repositoryWindow.KeyDown += (_, k) =>
+        {
+            Action? action = ActionableCommands.Find(command => command.Shortcut == k
+                && (command.Target.HasFlag(Target.RepositoryNode)
+                    || command.Target.HasFlag(Target.BranchNode)
+                    || command.Target.HasFlag(Target.RepositoryWindow))).Action;
+
+            action?.Invoke();
+
+            k.Handled = action is not null;
+        };
+
+        _logWindow.KeyDown += (_, k) =>
+        {
+            Action? action = ActionableCommands.Find(command => command.Shortcut == k
+                && command.Target.HasFlag(Target.LogWindow)).Action;
+            action?.Invoke();
+
+            k.Handled = action is not null;
+        };
+
+        _filterByDirty.Activated += (_, _) => FilterRepositoryList();
+
+        _filterByBehind.Activated += (_, _) => FilterRepositoryList();
+
+        _filterByError.Activated += (_, _) => FilterRepositoryList();
+
+        Initialized += (s, _) =>
+        {
+            (s as View)?.App!.Popovers?.Register(repositoryTreeContextMenu);
+            (s as View)?.App!.Popovers?.Register(logsViewContextMenu);
+
+            App!.AddTimeout(TimeSpan.FromMilliseconds(100), () =>
             {
-                X = 2,
-                ColorScheme = Colors.Menu
-            };
-
-            filterFrame.Add(filterLabel);
-
-            FilterByDirty = new CheckBox("Dirty (*)")
-            {
-                X = Pos.Right(filterLabel) + 2,
-                ColorScheme = Colors.Menu
-            };
-
-            filterFrame.Add(FilterByDirty);
-
-            FilterByBehind = new CheckBox("Behind (↓)")
-            {
-                X = Pos.Right(FilterByDirty) + 2,
-                ColorScheme = Colors.Menu
-            };
-
-            filterFrame.Add(FilterByBehind);
-
-            FilterByError = new CheckBox("Error")
-            {
-                X = Pos.Right(FilterByBehind) + 2,
-                ColorScheme = Colors.Menu
-            };
-
-            filterFrame.Add(FilterByError);
-
-            RepositoryWindow.Add(filterFrame);
-
-            var lineView = new LineView
-            {
-                Y = Pos.Bottom(filterFrame)
-            };
-
-            RepositoryWindow.Add(lineView);
-
-            RepositoryTree = new TreeView
-            {
-                Y = Pos.Bottom(lineView),
-                Width = Dim.Fill(),
-                Height = Dim.Fill(),
-                DesiredCursorVisibility = CursorVisibility.Invisible,
-                AllowLetterBasedNavigation = false
-            };
-
-            RepositoryTree.Style.LeaveLastRow = true;
-            RepositoryTree.Style.ExpandableSymbol = '►';
-            RepositoryTree.Style.CollapseableSymbol = '▼';
-
-            var repositoryTreeContextMenu = new ContextMenu(RepositoryTree, new MenuBarItem());
-
-            static MenuItem[] GetContextMenuItems()
-            {
-                var repositoryNode = RepositoryTree!.SelectedObject;
-                var branchNodeIsSelected = repositoryNode is BranchNode && RepositoryTree.IsExpanded(RepositoryTree.GetParent(repositoryNode));
-                var selectedNodeIsVisible = branchNodeIsSelected || repositoryNode is RepositoryNode;
-
-                if (branchNodeIsSelected)
+                if (!_logQueue.IsEmpty)
                 {
-                    repositoryNode = RepositoryTree.GetParent(repositoryNode);
+                    string logs = string.Empty;
+                    while (_logQueue.TryDequeue(out var log))
+                    {
+                        // TODO: text color based on LogType  => revisit once https://github.com/gui-cs/Terminal.Gui/pull/1628 has been merged
+                        logs += $"{log.Timestamp:yyyy\\-MM\\-dd HH\\:mm\\:ss\\.ffff} {log.Message}{Environment.NewLine}";
+                    }
+
+                    _logWindow.Text += logs;
+                    _logWindow.VerticalScrollBar.Value = _logWindow.VerticalScrollBar.ScrollableContentSize;
+
+                    if (_logWindow.Visible)
+                    {
+                        _logWindow.SetNeedsDraw();
+                    }
                 }
 
-                var isDirty = selectedNodeIsVisible && (repositoryNode as RepositoryNode)!.Status?.IsDirty == true;
+                return true;
+            });
 
-                return ActionableCommands.Where(
-                        command => branchNodeIsSelected && command.Target.HasFlag(Target.BranchNode)).Select(
-                            command => new MenuItem(null, command.Description, command.Action, shortcut: command.Shortcut))
-                    .Concat(ActionableCommands.Where(
-                        command => selectedNodeIsVisible && command.Target.HasFlag(Target.RepositoryNode) && command.Type is not CommandType.ViewChangesInSelectedRepository).Select(
-                            command => new MenuItem(null, command.Description, command.Action, shortcut: command.Shortcut)))
-                    .Concat(ActionableCommands.Where(
-                        command => isDirty && command.Type is CommandType.ViewChangesInSelectedRepository).Select(
-                            command => new MenuItem(null, command.Description, command.Action, shortcut: command.Shortcut)))
-                    .Concat(ActionableCommands.Where(
-                        command => command.Target.HasFlag(Target.RepositoryWindow)).Select(
-                            command => new MenuItem(null, command.Description, command.Action, shortcut: command.Shortcut))).ToArray();
-            }
+            UiInitialized?.Invoke(s, EventArgs.Empty);
+        };
+    }
 
-            RepositoryTree.MouseClick += (e) =>
-            {
-                if (e.MouseEvent.Flags == repositoryTreeContextMenu.MouseFlags)
-                {
-                    repositoryTreeContextMenu = new ContextMenu(e.MouseEvent.X, e.MouseEvent.Y, new MenuBarItem(GetContextMenuItems()));
-                    repositoryTreeContextMenu.Show();
-                    e.Handled = true;
-                }
-            };
-
-            RepositoryWindow.Add(RepositoryTree);
-
-            var repositoryHeadColorScheme = new ColorScheme
-            {
-                Focus = Application.Driver.MakeAttribute(Color.BrightMagenta, RepositoryTree.ColorScheme.Focus.Background),
-                Normal = Application.Driver.MakeAttribute(Color.BrightYellow, RepositoryTree.ColorScheme.Normal.Background)
-            };
-
-            RepositoryTree.ColorGetter = (node) => ((node as BranchNode)?.IsCurrentRepositoryHead ?? false) ? repositoryHeadColorScheme : null;
-
-            TreeScrollBar = new ScrollBarView(RepositoryTree, true);
-
-            TreeScrollBar.ChangedPosition += () =>
-            {
-                RepositoryTree.ScrollOffsetVertical = TreeScrollBar.Position;
-                if (RepositoryTree.ScrollOffsetVertical != TreeScrollBar.Position)
-                {
-                    TreeScrollBar.Position = RepositoryTree.ScrollOffsetVertical;
-                }
-                RepositoryTree.SetNeedsDisplay();
-            };
-
-            RepositoryTree.DrawContent += _ =>
-            {
-                TreeScrollBar.Size = RepositoryTree.ContentHeight;
-                TreeScrollBar.Position = RepositoryTree.ScrollOffsetVertical;
-                TreeScrollBar.Refresh();
-            };
-
-            var processingLabelColorScheme = new ColorScheme
-            {
-                Normal = Application.Driver.MakeAttribute(Color.BrightGreen, Color.Black)
-            };
-
-            ProcessingLabel = new Label
-            {
-                AutoSize = true,
-                Y = Pos.Top(RepositoryTree),
-                Visible = false,
-                ColorScheme = processingLabelColorScheme,
-                Height = 1
-            };
-
-            SpinnerLabel = new Label
-            {
-                Visible = false,
-                Y = ProcessingLabel.Y,
-                X = Pos.Right(ProcessingLabel),
-                AutoSize = false,
-                Width = 1,
-                Height = 1,
-                ColorScheme = processingLabelColorScheme
-            };
-
-            RepositoryWindow.Add(ProcessingLabel);
-            RepositoryWindow.Add(SpinnerLabel);
-
-            Add(RepositoryWindow);
-
-            var statusBarItems = new StatusItem[]
-            {
-                new(Key.CtrlMask | Key.Q, "~^Q~ Quit", () => Application.RequestStop()),
-                new(Key.CtrlMask | Key.H, "~^H~ Show help", () => ShowHelp())
-            };
-
-            var statusBar = new StatusBar(statusBarItems);
-
-            Add(statusBar);
-
-            LogsWindow = new Window("logs")
-            {
-                Y = Pos.Bottom(RepositoryWindow),
-                Width = Dim.Fill(),
-                Height = 10,
-                Visible = false,
-                ColorScheme = ColorScheme
-            };
-
-            // TODO: revisit when https://github.com/gui-cs/Terminal.Gui/pull/1838 is merged
-            LogsView = new TextView
-            {
-                ReadOnly = true,
-                //DesiredCursorVisibility = CursorVisibility.Invisible, // TextView.MoveEnd() needs to "see" the cursor!
-                Multiline = true,
-                WordWrap = true,
-                Width = Dim.Fill(),
-                Height = Dim.Fill()
-            };
-
-            LogsView.ContextMenu.MenuItems = new MenuBarItem(
-                ActionableCommands.Where(
-                    command => command.Target.HasFlag(Target.LogWindow)).Select(
-                        command => new MenuItem(null, command.Description, command.Action, shortcut: command.Shortcut)).ToArray());
-
-            LogsView.MouseClick += (e) =>
-            {
-                if (e.MouseEvent.Flags == LogsView.ContextMenu.MouseFlags)
-                {
-                    LogsView.ContextMenu.Position = new Point(e.MouseEvent.X, e.MouseEvent.Y + RepositoryWindow.Bounds.Height);
-                    LogsView.ContextMenu.Show();
-                    e.Handled = true;
-                }
-            };
-
-            LogsWindow.Add(LogsView);
-
-            Add(LogsWindow);
-
-            var logsScrollBar = new ScrollBarView(LogsView, true);
-
-            logsScrollBar.ChangedPosition += () =>
-            {
-                LogsView.TopRow = logsScrollBar.Position;
-                if (LogsView.TopRow != logsScrollBar.Position)
-                {
-                    logsScrollBar.Position = LogsView.TopRow;
-                }
-                LogsWindow.SetNeedsDisplay();
-            };
-
-            LogsView.DrawContent += _ =>
-            {
-                logsScrollBar.Size = LogsView.Lines;
-                logsScrollBar.Position = LogsView.TopRow;
-                logsScrollBar.Refresh();
-            };
-
-            RepositoryWindow.KeyPress += (k) =>
-            {
-                var actionableCommand = ActionableCommands.Find(command => command.Shortcut == k.KeyEvent.Key
-                    && (command.Target.HasFlag(Target.RepositoryNode)
-                        || command.Target.HasFlag(Target.BranchNode)
-                        || command.Target.HasFlag(Target.RepositoryWindow)));
-
-                if (actionableCommand is null)
-                {
-                    return;
-                }
-
-                actionableCommand.Action();
-                k.Handled = true;
-            };
-
-            LogsWindow.KeyPress += (k) =>
-            {
-                var actionableCommand = ActionableCommands.Find(command => command.Shortcut == k.KeyEvent.Key
-                    && command.Target.HasFlag(Target.LogWindow));
-
-                if (actionableCommand is null)
-                {
-                    return;
-                }
-
-                actionableCommand.Action();
-                k.Handled = true;
-            };
-
-            FilterByDirty.Toggled += (_) => FilterRepositoryList();
-
-            FilterByBehind.Toggled += (_) => FilterRepositoryList();
-
-            FilterByError.Toggled += (_) => FilterRepositoryList();
-
-            Task.Run(() => WriteLogs());
-
-            OnInitialized(this);
+    public void LoadRepositories(string? path = null, bool getStatus = true)
+    {
+        if (path is null && _basePath is null)
+        {
+            return;
         }
 
-        private static void OnInitialized(RepositoryManager gitRepoManager)
+        if (path is not null && _basePath is null)
         {
-            UiInitialized?.Invoke(gitRepoManager, EventArgs.Empty);
+            _basePath = path;
+            _repositoryWindow.Title = GitRepoManagerWindowTitle + " - " + _basePath;
         }
 
-        public static async void LoadRepositories(string? path = null)
+        int repositoryCount = 0;
+        ResetLogWindow();
+
+        WrapProgress(CommandType.LoadRepositories, progress => repositoryCount = LoadRepositoriesHandler(_basePath!, progress));
+
+        if (repositoryCount is 0)
         {
-            if (RepositoryWindow is null
-                || RepositoryTree is null
-                || FilterByDirty is null
-                || FilterByBehind is null
-                || FilterByError is null
-                || (path is null && BasePath is null))
-            {
-                return;
-            }
-
-            if (path is not null && BasePath is null)
-            {
-                BasePath = path;
-                RepositoryWindow.Title = GitRepoManagerWindowTitle + " - " + BasePath;
-            }
-
-            ResetLogWindow();
-
-            StartProcessing(CommandType.LoadRepositories);
-
-            if (!await RepositoryManagerHandlers.LoadRepos(RepositoryTree, BasePath!))
-            {
-                RepositoryTree.ClearObjects();
-
-                ToggleLogWindowVisibility(true);
-            }
-
-            OriginalNodeList = RepositoryTree.Objects;
-
-            if (FilterByDirty.Checked
-                || FilterByBehind.Checked
-                || FilterByError.Checked)
-            {
-                FilterRepositoryList();
-            }
-
-            RepositoryTree.SetFocus();
-
-            EndProcessing();
+            ToggleLogWindowVisibility(true);
         }
-
-        internal static void LogInfo(string message)
+        else
         {
-            Log(LogType.Information, message);
-        }
-
-        internal static void LogWarning(string message)
-        {
-            Log(LogType.Warning, message);
-        }
-
-        internal static void LogError(string message)
-        {
-            Log(LogType.Error, message);
-        }
-
-        private static void ResetLogWindow()
-        {
-            if (Processing
-                || LogsView is null)
+            if (getStatus)
             {
-                return;
-            }
-
-            while (Logs.Count > 0)
-            {
-                Logs.TryTake(out _);
-            }
-
-            LogsView.Text = string.Empty;
-        }
-
-        private static void WriteLogs()
-        {
-            if (LogsView is null
-                || LogsWindow is null)
-            {
-                return;
-            }
-
-            foreach (var log in Logs.GetConsumingEnumerable())
-            {
-                // TODO: text color based on LogType  => revisit once https://github.com/gui-cs/Terminal.Gui/pull/1628 has been merged
-                LogsView.Text += $"{log.Timestamp:yyyy\\-MM\\-dd HH\\:mm\\:ss\\.ffff} {log.Message}{Environment.NewLine}";
-                LogsView.MoveEnd();
-
-                if (LogsWindow.Visible)
-                {
-                    LogsView.SetNeedsDisplay();
-                }
+                RetrieveStatusForAllRepositories();
             }
         }
 
-        private static void Log(LogType logType, string message)
-        {
-            if (Logs is null)
-            {
-                return;
-            }
+        _originalNodeList = _repositoryTree.Objects ?? [];
 
-            Logs.Add(new(DateTimeOffset.Now, logType, message));
+        UpdateFilterStatus();
+
+        FilterRepositoryList();
+
+        _repositoryTree.SetFocus();
+
+    }
+
+    private void LogInfo(string message) =>
+        Log(LogType.Information, message);
+
+    private void LogWarning(string message) =>
+        Log(LogType.Warning, message);
+
+    private void LogError(string message) =>
+        Log(LogType.Error, message);
+
+    private void ResetLogWindow()
+    {
+        _logQueue.Clear();
+        _logWindow.Text = string.Empty;
+    }
+
+    private void Log(LogType logType, string message) =>
+        _logQueue.Enqueue(new(DateTimeOffset.Now, logType, message));
+
+    private void ToggleLogWindowVisibility(bool? visible = null)
+    {
+        if (_logWindow.Visible == visible)
+        {
+            return;
         }
 
-        private static void ToggleLogWindowVisibility(bool? visible = null)
+        _logWindow.Visible = visible ?? !_logWindow.Visible;
+
+        _repositoryWindow.Height = _logWindow.Visible
+            ? _repositoryWindow.Height - _logWindow.Height
+            : _repositoryWindow.Height + _logWindow.Height;
+
+        if (_logWindow.Visible)
         {
-            if (LogsWindow is null
-                || RepositoryWindow is null
-                || RepositoryTree is null)
-            {
-                return;
-            }
+            _logWindow.SetFocus();
+        }
+        else
+        {
+            _repositoryTree.SetFocus();
+        }
+    }
 
-            if (LogsWindow.Visible == visible)
-            {
-                return;
-            }
+    private void ShowHelp()
+    {
+        StringBuilder aboutMessage = new();
+        aboutMessage.AppendLine(string.Empty);
 
-            LogsWindow.Visible = visible ?? !LogsWindow.Visible;
+        ActionableCommands.ForEach(
+            command => aboutMessage.AppendLine(
+                $"{command.Shortcut} - {command.Description}".PadLeft(4).PadRight(60)));
 
-            RepositoryWindow.Height = LogsWindow.Visible
-                ? RepositoryWindow.Height - LogsWindow.Height
-                : RepositoryWindow.Height + LogsWindow.Height;
+        MessageBox.Query(App!, "Help", aboutMessage.ToString(), buttons: "_Close");
+    }
 
-            if (LogsWindow.Visible)
-            {
-                LogsWindow.SetFocus();
-            }
-            else
-            {
-                RepositoryTree.SetFocus();
-            }
+    private void CopySelectedRepositoryPathToClipboard() =>
+        CopySelectedRepositoryPathToClipboardHandler();
+
+    private void CheckoutSelectedBranch() =>
+        WrapProgress(CommandType.CheckoutSelectedBranch, CheckoutSelectedBranchHandler);
+
+    private void DeleteSelectedBranch() =>
+        WrapProgress(CommandType.DeleteSelectedBranch, DeleteSelectedBranchHandler);
+
+    private void ToggleExpandSelectedRepositoryNode()
+    {
+        var repositoryNode = _repositoryTree.SelectedObject;
+
+        if (repositoryNode is BranchNode)
+        {
+            repositoryNode = _repositoryTree.GetParent(repositoryNode);
         }
 
-        private static void ShowHelp()
+        if (_repositoryTree.IsExpanded(repositoryNode))
         {
-            StringBuilder aboutMessage = new();
-            aboutMessage.AppendLine(string.Empty);
-
-            ActionableCommands.ForEach(
-                command => aboutMessage.AppendLine(
-                    $"{ShortcutHelper.GetShortcutTag(command.Shortcut)} - {command.Description}".PadLeft(4).PadRight(60)));
-
-            var border = new Border
-            {
-                Effect3D = false,
-                BorderStyle = BorderStyle.Single
-            };
-
-            MessageBox.Query(aboutMessage.Length + 2, ActionableCommands.Count + 5, "Help", aboutMessage.ToString(), border: border, buttons: "_Close");
+            _repositoryTree.Collapse(repositoryNode);
         }
-
-        private static void CopySelectedRepositoryPathToClipboard()
+        else
         {
-            if (RepositoryTree is null)
-            {
-                return;
-            }
-
-            RepositoryManagerHandlers.CopySelectedRepositoryPathToClipboard(RepositoryTree);
+            _repositoryTree.Expand(repositoryNode);
         }
+    }
 
-        private static async void CheckoutSelectedBranch()
+    private void ExpandAll()
+    {
+        _repositoryTree.SelectedObject = null;
+        _repositoryTree.ExpandAll();
+    }
+
+    private void CollapseAll()
+    {
+        _repositoryTree.SelectedObject = null;
+        _repositoryTree.CollapseAll();
+    }
+
+    private void FetchForSelectedRepository() =>
+        WrapProgress(CommandType.FetchForSelectedRepository, async progress => await FetchForSelectedRepositoryHandler(progress: progress));
+
+    private void FetchForAllRepositories() =>
+        WrapProgress(CommandType.FetchForAllRepositories, async progress => await FetchForAllRepositoriesHandler(progress));
+
+    private void PullForSelectedRepository() =>
+        WrapProgress(CommandType.PullForSelectedRepository, async progress => await PullForSelectedRepositoryHandler(progress: progress, filter: FilterRepositoryList));
+
+    private void PullForAllRepositories() =>
+        WrapProgress(CommandType.PullForAllRepositories, async progress => await PullForAllRepositoriesHandler(progress, FilterRepositoryList));
+
+    private void ResetSelectedBranch() =>
+        WrapProgress(CommandType.ResetSelectedBranch, async progress => await ResetSelectedBranchHandler(progress, FilterRepositoryList));
+
+    private void RetrieveStatusForSelectedRepository() =>
+        WrapProgress(CommandType.RetrieveStatusForSelectedRepository, async progress => await RetrieveStatusForSelectedRepositoryHandler(progress: progress));
+
+    private void RetrieveStatusForAllRepositories() =>
+        WrapProgress(CommandType.RetrieveStatusForAllRepositories, RetrieveStatusForAllRepositoriesHandler);
+
+    private void UpdateSelectedRepository() =>
+        WrapProgress(CommandType.UpdateSelectedRepository, async progress =>
         {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
+            await FetchForSelectedRepositoryHandler(progress: progress, split: true);
+            await PullForSelectedRepositoryHandler(progress: progress, split: true);
+            progress.Fraction = 1f;
+        });
 
-            StartProcessing(CommandType.CheckoutSelectedBranch);
-
-            await RepositoryManagerHandlers.CheckoutSelectedBranch(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void DeleteSelectedBranch()
+    private void UpdateAllRepositories() =>
+        WrapProgress(CommandType.UpdateAllRepositories, async progress =>
         {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
+            await FetchForAllRepositoriesHandler(progress, split: true);
+            await PullForAllRepositoriesHandler(progress, split: true);
+            progress.Fraction = 1f;
+        });
 
-            StartProcessing(CommandType.DeleteSelectedBranch);
+    private void ViewChangesInSelectedRepository()
+    {
+        ObservableCollection<ChangedItem> changedItems = [];
+        var repositoryNode = _repositoryTree.SelectedObject;
 
-            await RepositoryManagerHandlers.DeleteSelectedBranch(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static void ToggleExpandSelectedRepositoryNode()
+        WrapProgress(CommandType.ViewChangesInSelectedRepository, (progress) =>
         {
-            if (RepositoryTree is null)
-            {
-                return;
-            }
-
-            var repositoryNode = RepositoryTree.SelectedObject;
-
+            progress.Fraction = 0.25f;
             if (repositoryNode is BranchNode)
             {
-                repositoryNode = RepositoryTree.GetParent(repositoryNode);
+                repositoryNode = _repositoryTree.GetParent(repositoryNode);
             }
 
-            if (RepositoryTree.IsExpanded(repositoryNode))
-            {
-                RepositoryTree.Collapse(repositoryNode);
-            }
-            else
-            {
-                RepositoryTree.Expand(repositoryNode);
-            }
-        }
-
-        private static void ExpandAll()
-        {
-            if (RepositoryTree is null)
-            {
-                return;
-            }
-
-            RepositoryTree.SelectedObject = null;
-            RepositoryTree.ExpandAll();
-        }
-
-        private static void CollapseAll()
-        {
-            if (RepositoryTree is null)
-            {
-                return;
-            }
-
-            RepositoryTree.SelectedObject = null;
-            RepositoryTree.CollapseAll();
-        }
-
-        private static async void FetchForSelectedRepository()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.FetchForSelectedRepository);
-
-            await RepositoryManagerHandlers.FetchForSelectedRepository(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void FetchForAllRepositories()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.FetchForAllRepositories);
-
-            await RepositoryManagerHandlers.FetchForAllRepositories(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void PullForSelectedRepository()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.PullForSelectedRepository);
-
-            await RepositoryManagerHandlers.PullForSelectedRepository(RepositoryTree);
-
-            if (FilterByBehind!.Checked)
-            {
-                FilterRepositoryList();
-            }
-
-            EndProcessing();
-        }
-
-        private static async void PullForAllRepositories()
-        {
-            if (Processing
-                || RepositoryTree is null
-                || FilterByBehind is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.PullForAllRepositories);
-
-            await RepositoryManagerHandlers.PullForAllRepositories(RepositoryTree);
-
-            if (FilterByBehind.Checked)
-            {
-                FilterRepositoryList();
-            }
-
-            EndProcessing();
-        }
-
-        private static async void ResetSelectedBranch()
-        {
-            if (Processing
-                || RepositoryTree is null
-                || FilterByDirty is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.ResetSelectedBranch);
-
-            await RepositoryManagerHandlers.ResetSelectedBranch(RepositoryTree);
-
-            if (FilterByDirty.Checked)
-            {
-                FilterRepositoryList();
-            }
-
-            EndProcessing();
-        }
-
-        private static async void RetrieveStatusForSelectedRepository()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.RetrieveStatusForSelectedRepository);
-
-            await RepositoryManagerHandlers.RetrieveStatusForSelectedRepository(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void RetrieveStatusForAllRepositories()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.RetrieveStatusForAllRepositories);
-
-            await RepositoryManagerHandlers.RetrieveStatusForAllRepositories(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void UpdateSelectedRepository()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.UpdateSelectedRepository);
-
-            await RepositoryManagerHandlers.FetchForSelectedRepository(RepositoryTree);
-            await RepositoryManagerHandlers.PullForSelectedRepository(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static async void UpdateAllRepositories()
-        {
-            if (Processing
-                || RepositoryTree is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.UpdateAllRepositories);
-
-            ResetLogWindow();
-            await RepositoryManagerHandlers.FetchForAllRepositories(RepositoryTree);
-            await RepositoryManagerHandlers.PullForAllRepositories(RepositoryTree);
-
-            EndProcessing();
-        }
-
-        private static void ViewChangesInSelectedRepository()
-        {
-            if (Processing
-                || RepositoryTree is null
-                || RepositoryWindow is null)
-            {
-                return;
-            }
-
-            StartProcessing(CommandType.ViewChangesInSelectedRepository);
-
-            var repositoryNode = RepositoryTree.SelectedObject;
-
-            if (repositoryNode is BranchNode)
-            {
-                repositoryNode = RepositoryTree.GetParent(repositoryNode);
-            }
-
+            progress.Fraction = 0.5f;
             var repository = (repositoryNode as RepositoryNode)!.Repository;
 
-            var changedItems = RepositoryActions.GetChanges(repository);
+            progress.Fraction = 0.75f;
+            changedItems = [.. RepositoryActions.GetChanges(repository).OrderBy(item => item.Path)];
 
-            EndProcessing();
+            progress.Fraction = 1f;
+        });
 
-            Application.Run(new RepositoryChangesViewer((repositoryNode as RepositoryNode)!.RepositoryName, [.. changedItems.OrderBy(item => item.Path)]));
-        }
+        App!.Run(new RepositoryChangesViewer((repositoryNode as RepositoryNode)!.RepositoryName, changedItems));
+    }
 
-        private static void ChangeBaseDirectory()
+    private void WrapProgress(CommandType commandType, Action<ProgressBar> trackerAction)
+    {
+        if (_processing)
         {
-            var directorySelection = new OpenDialog("Change base directory", "Select new base directory to search for git repositories", openMode: OpenDialog.OpenMode.Directory)
-            {
-                DirectoryPath = BasePath
-            };
-
-            Application.Run(directorySelection);
-
-            if (!directorySelection.Canceled && !string.IsNullOrWhiteSpace(directorySelection.FilePath?.ToString()))
-            {
-                BasePath = null;
-
-                LoadRepositories(directorySelection.FilePath.ToString());
-            }
+            return;
         }
 
-        private static void FilterRepositoryList()
+        _processing = true;
+
+        var tracker = new ProgressTracker(commandType, trackerAction);
+
+        var timeout = App!.AddTimeout(TimeSpan.FromMilliseconds(100), () =>
         {
-            if (RepositoryTree is null
-                || FilterByDirty is null
-                || FilterByBehind is null
-                || FilterByError is null)
+            if (!tracker.Processing)
             {
-                return;
+                App!.Invoke((app) => app.RequestStop(tracker));
             }
+            return tracker.Processing;
+        });
 
-            var objects = OriginalNodeList.Select(o => o as RepositoryNode);
+        App!.Run(tracker);
 
-            if (FilterByDirty.Checked)
-            {
-                objects = objects.Where(o => o?.Status?.IsDirty ?? false);
-            }
+        tracker.Dispose();
 
-            if (FilterByBehind.Checked)
-            {
-                objects = objects.Where(o => o?.CurrentRepositoryHeadIsBehind ?? false);
-            }
+        UpdateFilterStatus();
 
-            if (FilterByError.Checked)
-            {
-                objects = objects.Where(o => o?.HasError ?? false);
-            }
+        _processing = false;
+    }
 
-            RepositoryTree.ClearObjects();
-            RepositoryTree.AddObjects(objects);
-        }
-
-        private static void StartProcessing(CommandType commandType)
+    private void WrapProgress(CommandType commandType, Func<ProgressBar, Task> trackerAction)
+    {
+        if (_processing)
         {
-            Processing = true;
-
-            if (ProcessingLabel is not null
-                && SpinnerLabel is not null
-                && ProcessingLabel.SuperView.Frame.Width > 0)
-            {
-                var actionableCommand = ActionableCommands.Find(command => command.Type == commandType);
-
-                Application.MainLoop.Invoke(() =>
-                {
-                    ProcessingLabel.Text = actionableCommand!.Description + " ";
-                    ProcessingLabel.X = Pos.AnchorEnd(ProcessingLabel.Frame.Width + 2 + (TreeScrollBar?.Visible == true ? 1 : 0));
-                    SpinnerLabel.Text = string.Empty;
-
-                    ProcessingLabel.Visible = true;
-                    SpinnerLabel.Visible = true;
-                });
-
-                Task.Run(() => RunSpinner());
-            }
+            return;
         }
 
-        private static void RunSpinner()
+        _processing = true;
+
+        var tracker = new ProgressTracker(commandType, trackerAction);
+
+        var timeout = App!.AddTimeout(TimeSpan.FromMilliseconds(100), () =>
         {
-            if (SpinnerLabel is null)
+            if (!tracker.Processing)
             {
-                return;
+                App!.Invoke((app) => app.RequestStop(tracker));
             }
+            return tracker.Processing;
+        });
 
-            var spinnerCount = 0;
-            var pattern = Kurukuru.Patterns.Line;
+        App!.Run(tracker);
 
-            while (Processing)
-            {
-                Application.MainLoop.Invoke(() => SpinnerLabel.Text = pattern.Frames[spinnerCount]);
+        tracker.Dispose();
 
-                if (++spinnerCount > pattern.Frames.Length - 1)
-                {
-                    spinnerCount = 0;
-                }
+        UpdateFilterStatus();
 
-                Thread.Sleep(pattern.Interval);
-            }
-        }
+        _processing = false;
+    }
 
-        private static void EndProcessing()
+    private void ChangeBaseDirectory()
+    {
+        if (_processing)
         {
-            if (ProcessingLabel is not null
-                && SpinnerLabel is not null)
-            {
-                Application.MainLoop.Invoke(() =>
-                {
-                    ProcessingLabel.Visible = false;
-                    SpinnerLabel.Visible = false;
-                });
-            }
-
-            Processing = false;
+            return;
         }
 
-        private static void LoadActionableCommands()
+        var directorySelection = new OpenDialog
         {
-            ActionableCommands =
-            [
-                // branch specific commands
-                new(CommandType.CheckoutSelectedBranch, Target.BranchNode, "Checkout selected branch", Key.c, () => CheckoutSelectedBranch()),
-                new(CommandType.ResetSelectedBranch, Target.BranchNode, "Reset selected branch", Key.r, () => ResetSelectedBranch()),
-                new(CommandType.DeleteSelectedBranch, Target.BranchNode, "Delete selected branch", Key.d, () => DeleteSelectedBranch()),
+            Title = "Change base directory",
+            Text = "Select new base directory to search for git repositories",
+            OpenMode = OpenMode.Directory,
+            Path = _basePath ?? string.Empty,
+            ShadowStyle = ShadowStyles.None,
+        };
 
-                // single repository commands
-                new(CommandType.RetrieveStatusForSelectedRepository, Target.RepositoryNode, "Retrieve status for selected repository", Key.s, () => RetrieveStatusForSelectedRepository()),
-                new(CommandType.FetchForSelectedRepository, Target.RepositoryNode, "Fetch for selected repository", Key.f, () => FetchForSelectedRepository()),
-                new(CommandType.PullForSelectedRepository, Target.RepositoryNode, "Pull for selected repository", Key.p, () => PullForSelectedRepository()),
-                new(CommandType.UpdateSelectedRepository, Target.RepositoryNode, "Update selected repository", Key.y, () => UpdateSelectedRepository()),
-                new(CommandType.ViewChangesInSelectedRepository, Target.RepositoryNode, "View Changes in selected repository", Key.v, () => ViewChangesInSelectedRepository()),
-                new(CommandType.ExpandAllNodes, Target.RepositoryNode, "Expand/collapse selected repository node", Key.e, () => ToggleExpandSelectedRepositoryNode()),
+        App!.Run(directorySelection);
 
-                // bulk repository commands
-                new(CommandType.RetrieveStatusForAllRepositories, Target.RepositoryWindow, "Retrieve status for all repositories", Key.S, () => RetrieveStatusForAllRepositories()),
-                new(CommandType.FetchForAllRepositories, Target.RepositoryWindow, "Fetch for all repositories", Key.F, () => FetchForAllRepositories()),
-                new(CommandType.PullForAllRepositories, Target.RepositoryWindow, "Pull for all repositories", Key.P, () => PullForAllRepositories()),
-                new(CommandType.UpdateAllRepositories, Target.RepositoryWindow, "Update all repositories", Key.Y, () => UpdateAllRepositories()),
+        directorySelection.Disposing += async (s, _) =>
+        {
+            var dialog = (OpenDialog?)s;
+            if (dialog?.Canceled is not true && !string.IsNullOrWhiteSpace(dialog?.Path ?? string.Empty))
+            {
+                _basePath = null;
 
-                // generic commands
-                new(CommandType.LoadRepositories, Target.RepositoryWindow, "Reload all repositories", Key.F5, () => LoadRepositories()),
-                new(CommandType.CollapseAllNodes, Target.RepositoryWindow, "Expand all repository nodes", Key.CtrlMask | Key.E, () => ExpandAll()),
-                new(CommandType.CollapseAllNodes, Target.RepositoryWindow, "Collapse all repository nodes", Key.CtrlMask | Key.ShiftMask | Key.E, () => CollapseAll()),
-                new(CommandType.ToggleLogWindow, Target.RepositoryWindow | Target.LogWindow, "Toggle log window view", Key.CtrlMask | Key.L, () => ToggleLogWindowVisibility()),
-                new(CommandType.ResetLogWindow, Target.RepositoryWindow | Target.LogWindow, "Reset Log Window", Key.CtrlMask | Key.J, () => ResetLogWindow()),
-                new(CommandType.ChangeBaseDirectory, Target.RepositoryWindow | Target.LogWindow, "Change base directory", Key.CtrlMask | Key.O, () => ChangeBaseDirectory()),
-                new(CommandType.ShowHelp, Target.RepositoryWindow | Target.LogWindow, "Show help", Key.CtrlMask | Key.H, () => ShowHelp())
-            ];
+                LoadRepositories(dialog!.Path);
+            }
+        };
 
-            var key = Key.CtrlMask | (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? Key.C : Key.Y);
-            ActionableCommands.Insert(0, new(CommandType.CopyPathToClipboard, Target.RepositoryNode, "Copy repository path to clipboard", key, () => CopySelectedRepositoryPathToClipboard()));
+        directorySelection.Dispose();
+    }
+
+    private void FilterRepositoryList()
+    {
+        IEnumerable<RepositoryNode> objects = _originalNodeList.Select(o => o as RepositoryNode).Where(o => o is not null)!;
+
+        if (_filterByDirty.Enabled && _filterByDirty.Value is CheckState.Checked)
+        {
+            objects = objects.Where(o => o?.Status?.IsDirty ?? false);
         }
+
+        if (_filterByBehind.Enabled && _filterByBehind.Value is CheckState.Checked)
+        {
+            objects = objects.Where(o => o?.CurrentRepositoryHeadIsBehind ?? false);
+        }
+
+        if (_filterByError.Enabled && _filterByError.Value is CheckState.Checked)
+        {
+            objects = objects.Where(o => o?.HasError ?? false);
+        }
+
+        if (objects.Count() != (_repositoryTree.Objects?.Count() ?? 0))
+        {
+            _repositoryTree.SelectedObject = null;
+            _repositoryTree.ClearObjects();
+            _repositoryTree.AddObjects(objects);
+        }
+    }
+
+    private void UpdateFilterStatus()
+    {
+        _filterByDirty.Enabled = _originalNodeList.Any(o => (o as RepositoryNode)?.Status?.IsDirty ?? false);
+        _filterByBehind.Enabled = _originalNodeList.Any(o => (o as RepositoryNode)?.CurrentRepositoryHeadIsBehind ?? false);
+        _filterByError.Enabled = _originalNodeList.Any(o => (o as RepositoryNode)?.HasError ?? false);
+    }
+
+    private void LoadActionableCommands()
+    {
+        ActionableCommands =
+        [
+            // branch specific commands
+            new(CommandType.CheckoutSelectedBranch, Target.BranchNode, "Checkout selected branch", Key.C, CheckoutSelectedBranch),
+            new(CommandType.ResetSelectedBranch, Target.BranchNode, "Reset selected branch", Key.R, ResetSelectedBranch),
+            new(CommandType.DeleteSelectedBranch, Target.BranchNode, "Delete selected branch", Key.D, DeleteSelectedBranch),
+
+            // single repository commands
+            new(CommandType.RetrieveStatusForSelectedRepository, Target.RepositoryNode, "Retrieve status for selected repository", Key.S, RetrieveStatusForSelectedRepository),
+            new(CommandType.FetchForSelectedRepository, Target.RepositoryNode, "Fetch for selected repository", Key.F, FetchForSelectedRepository),
+            new(CommandType.PullForSelectedRepository, Target.RepositoryNode, "Pull for selected repository", Key.P, PullForSelectedRepository),
+            new(CommandType.UpdateSelectedRepository, Target.RepositoryNode, "Update selected repository", Key.Y, UpdateSelectedRepository),
+            new(CommandType.ViewChangesInSelectedRepository, Target.RepositoryNode, "View Changes in selected repository", Key.V, ViewChangesInSelectedRepository),
+            new(CommandType.ExpandAllNodes, Target.RepositoryNode, "Expand selected repository node", Key.CursorRight, ToggleExpandSelectedRepositoryNode),
+            new(CommandType.ExpandAllNodes, Target.RepositoryNode, "Collapse selected repository node", Key.CursorLeft, ToggleExpandSelectedRepositoryNode),
+
+            // bulk repository commands
+            new(CommandType.RetrieveStatusForAllRepositories, Target.RepositoryWindow, "Retrieve status for all repositories", Key.S.WithShift, RetrieveStatusForAllRepositories),
+            new(CommandType.FetchForAllRepositories, Target.RepositoryWindow, "Fetch for all repositories", Key.F.WithShift, FetchForAllRepositories),
+            new(CommandType.PullForAllRepositories, Target.RepositoryWindow, "Pull for all repositories", Key.P.WithShift, PullForAllRepositories),
+            new(CommandType.UpdateAllRepositories, Target.RepositoryWindow, "Update all repositories", Key.Y.WithShift, UpdateAllRepositories),
+
+            // generic commands
+            new(CommandType.LoadRepositories, Target.RepositoryWindow, "Reload all repositories", Key.F5, () => LoadRepositories()),
+            new(CommandType.CollapseAllNodes, Target.RepositoryWindow, "Expand all repository nodes", Key.CursorRight.WithCtrl, ExpandAll),
+            new(CommandType.CollapseAllNodes, Target.RepositoryWindow, "Collapse all repository nodes", Key.CursorLeft.WithCtrl, CollapseAll),
+            new(CommandType.ToggleLogWindow, Target.RepositoryWindow | Target.LogWindow, "Toggle log window view", Key.L.WithCtrl, () => ToggleLogWindowVisibility()),
+            new(CommandType.ResetLogWindow, Target.RepositoryWindow | Target.LogWindow, "Reset Log Window", Key.K.WithCtrl, ResetLogWindow),
+            new(CommandType.ChangeBaseDirectory, Target.RepositoryWindow | Target.LogWindow, "Change base directory", Key.O.WithCtrl, ChangeBaseDirectory),
+            new(CommandType.ShowHelp, Target.RepositoryWindow | Target.LogWindow, "Show help", Key.H.WithAlt, ShowHelp)
+        ];
+
+        var key = (RuntimeInformation.IsOSPlatform(OSPlatform.Windows) ? Key.C : Key.Y).WithCtrl;
+        ActionableCommands.Insert(0, new(CommandType.CopyPathToClipboard, Target.RepositoryNode, "Copy repository path to clipboard", key, CopySelectedRepositoryPathToClipboard));
     }
 }

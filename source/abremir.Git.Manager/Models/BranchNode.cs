@@ -1,35 +1,30 @@
-﻿using Terminal.Gui.Trees;
+using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager.Models
+namespace abremir.Git.Manager.Models;
+
+internal class BranchNode(string friendlyName) : TreeNode
 {
-    internal class BranchNode : TreeNode
+    public string FriendlyName { get; } = friendlyName;
+    public BranchStatus? Status { get; set; }
+    public BranchTrackingDetails TrackingDetails { get; set; } = new BranchTrackingDetails();
+    public bool IsGone { get; set; }
+    public bool IsCurrentRepositoryHead { get; set; }
+
+    public override string Text =>
+        GetBranchText();
+
+    private string GetBranchText()
     {
-        public BranchNode(string friendlyName)
-        {
-            FriendlyName = friendlyName;
-        }
-
-        public string FriendlyName { get; }
-        public BranchStatus? Status { get; set; }
-        public BranchTrackingDetails TrackingDetails { get; set; } = new BranchTrackingDetails();
-        public bool IsGone { get; set; }
-        public bool IsCurrentRepositoryHead { get; set; }
-
-        public override string Text => GetBranchText();
-
-        private string GetBranchText()
-        {
-            var status = IsCurrentRepositoryHead && Status?.IsDirty is true
-                ? $" +{Status.Added} ~{Status.Modified} -{Status.Removed}"
+        var status = IsCurrentRepositoryHead && Status?.IsDirty is true
+            ? $" +{Status.Value.Added} ~{Status.Value.Modified} -{Status.Value.Removed}"
+            : string.Empty;
+        var statusSymbol = IsGone
+            ? " ≠"
+            : IsCurrentRepositoryHead && Status?.IsDirty is false
+                ? " ≡"
                 : string.Empty;
-            var statusSymbol = IsGone
-                ? " ≠"
-                : IsCurrentRepositoryHead && Status?.IsDirty is false
-                    ? " ≡"
-                    : string.Empty;
-            var trackingDetails = $"↓{TrackingDetails.BehindBy} ↑{TrackingDetails.AheadBy}";
+        var trackingDetails = $"↓{TrackingDetails.BehindBy} ↑{TrackingDetails.AheadBy}";
 
-            return $"{FriendlyName}{status}{statusSymbol} {trackingDetails}";
-        }
+        return $"{FriendlyName}{status}{statusSymbol} {trackingDetails}";
     }
 }

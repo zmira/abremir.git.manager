@@ -1,466 +1,645 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using abremir.Git.Manager.Models;
-using Terminal.Gui;
-using Terminal.Gui.Trees;
+using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager
+namespace abremir.Git.Manager;
+
+internal partial class RepositoryManager
 {
-    internal static class RepositoryManagerHandlers
+    private int LoadRepositoriesHandler(string path, ProgressBar progress)
     {
-        internal static async Task<bool> LoadRepos(TreeView tree, string path)
+        progress.Fraction = 0.25f;
+
+        _repositoryTree.ClearObjects();
+
+        LogInfo($"Load all repositories from {path} - Started");
+
+        progress.Fraction = 0.5f;
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        var repos = RepositoryLister.ListRepos(path)
+            .ConvertAll(repo => new RepositoryNode(repo))
+            .OrderBy(repo => repo.RepositoryName)
+            .ToList();
+
+        stopwatch.Stop();
+
+        progress.Fraction = 0.75f;
+
+        LogInfo($"Load repositories from {path} - Complete: {repos.Count} repositor{(repos.Count == 1 ? "y" : "ies")} in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+
+        _repositoryTree.AddObjects(repos);
+
+        progress.Fraction = 1f;
+
+        return repos.Count;
+    }
+
+    private Task<TimeSpan> PullForSelectedRepositoryHandler(ITreeNode? repositoryTreeNode = null, ProgressBar? progress = null, Action? filter = null, bool? split = false)
+    {
+        float fraction = 1f / (filter is not null ? 4 : 3) / (split is true ? 2 : 1);
+        progress?.Fraction += fraction;
+
+        var selected = repositoryTreeNode ?? _repositoryTree.SelectedObject;
+
+        var repositoryNode = GetRepositoryNode(selected);
+
+        if (repositoryNode is null
+            || repositoryNode.Status?.IsDirty == true
+            || !repositoryNode.CurrentRepositoryHeadIsBehind
+            || repositoryNode.HasError)
         {
-            RepositoryManager.LogInfo($"Load all repositories from {path} - Started");
+            if (repositoryNode?.Status?.IsDirty == true)
+            {
+                LogError($"Pull for {repositoryNode.RepositoryName} - Error: Repository is dirty");
+            }
 
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
+            if (split is false)
+            {
+                progress?.Fraction = 1f;
+            }
 
-            var repos = RepositoryLister.ListRepos(path);
+            return Task.FromResult(TimeSpan.Zero);
+        }
+
+        progress?.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+        repositoryNode!.IsUpdating = true;
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        try
+        {
+            RepositoryActions.Pull(repositoryNode!.Repository);
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Pull for {repositoryNode.RepositoryName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            repositoryNode!.IsUpdating = false;
+
+            progress?.Fraction += fraction;
+
+            _repositoryTree.RefreshObject(repositoryNode);
+        }
+
+        if (!repositoryNode!.HasError)
+        {
+            LogInfo($"Pull for {repositoryNode.RepositoryName} - Complete: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+        }
+
+        if (filter is not null)
+        {
+            progress?.Fraction += fraction;
+
+            filter();
+        }
+
+        if (split is false)
+        {
+            progress?.Fraction = 1f;
+        }
+
+        return Task.FromResult(stopwatch.Elapsed);
+    }
+
+    private async Task PullForAllRepositoriesHandler(ProgressBar progress, Action? filter = null, bool? split = false)
+    {
+        float fraction = 0.2f / (filter is not null ? 3 : 2) / (split is true ? 2 : 1);
+        progress.Fraction += fraction;
+
+        LogInfo("Pull for all repositories - Started");
+
+        List<Task> tasks = [];
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        foreach (var repositoryNode in _repositoryTree.Objects ?? [])
+        {
+            if (repositoryNode is null
+                || repositoryNode is not RepositoryNode)
+            {
+                continue;
+            }
+
+            tasks.Add(Task.Run(async () => await PullForSelectedRepositoryHandler(repositoryNode)));
+        }
+
+        progress.Fraction += fraction;
+
+        if (tasks.Count is 0)
+        {
+            LogInfo("Pull for all repositories - Skipped");
+
+            if (split is false)
+            {
+                progress.Fraction = 1f;
+            }
+
+            return;
+        }
+
+        float fraction2 = ((1f / (split is true ? 2 : 1)) - (fraction * 2) - (filter is not null ? fraction : 0f)) / tasks.Count;
+
+        try
+        {
+            await foreach (Task<TimeSpan> completedTask in Task.WhenEach(tasks))
+            {
+                _ = await completedTask;
+                progress.Fraction += fraction2;
+            }
 
             stopwatch.Stop();
 
-            if (repos.Count == 0)
-            {
-                RepositoryManager.LogWarning($"Load repositories from {path} - No repositories found!");
-                return false;
-            }
-
-            RepositoryManager.LogInfo($"Load repositories from {path} - Complete: {repos.Count} repositor{(repos.Count == 1 ? "y" : "ies")} in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-
-            tree.ClearObjects();
-            tree.AddObjects(repos
-                .ConvertAll(repo => new RepositoryNode(repo))
-                .OrderBy(repo => repo.RepositoryName));
-
-            await RetrieveStatusForAllRepositories(tree);
-
-            return true;
+            LogInfo($"Pull for all repositories - Complete: {_repositoryTree.Objects?.Count() ?? 0} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Pull for all repositories - Error: {ex.Message}");
         }
 
-        internal static Task<TimeSpan> PullForSelectedRepository(TreeView tree, ITreeNode? repositoryTreeNode = null)
+        if (filter is not null)
         {
-            var selected = repositoryTreeNode ?? tree.SelectedObject;
+            progress.Fraction += fraction;
 
-            var repositoryNode = GetRepositoryNode(tree, selected);
+            filter();
+        }
 
+        if (split is false)
+        {
+            progress.Fraction = 1f;
+        }
+    }
+
+    private Task<TimeSpan> FetchForSelectedRepositoryHandler(ITreeNode? repositoryTreeNode = null, ProgressBar? progress = null, bool? split = false)
+    {
+        float fraction = 1f / 3 / (split is true ? 2 : 1);
+        progress?.Fraction += fraction;
+
+        var selected = repositoryTreeNode ?? _repositoryTree.SelectedObject;
+
+        var repositoryNode = GetRepositoryNode(selected);
+
+        if (repositoryNode is null)
+        {
+            if (split is false)
+            {
+                progress?.Fraction = 1f;
+            }
+
+            return Task.FromResult(TimeSpan.Zero);
+        }
+
+        progress?.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+        repositoryNode!.IsUpdating = true;
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        try
+        {
+            RepositoryActions.Fetch(repositoryNode!.Repository);
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Fetch for {repositoryNode.RepositoryName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            repositoryNode!.IsUpdating = false;
+
+            progress?.Fraction += fraction;
+
+            _repositoryTree.RefreshObject(repositoryNode);
+        }
+
+        if (!repositoryNode!.HasError)
+        {
+            LogInfo($"Fetch for {repositoryNode.RepositoryName} - Complete: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+        }
+
+        if (split is false)
+        {
+            progress?.Fraction = 1f;
+        }
+
+        return Task.FromResult(stopwatch.Elapsed);
+    }
+
+    private async Task FetchForAllRepositoriesHandler(ProgressBar progress, bool? split = false)
+    {
+        float fraction = 0.2f / (split is true ? 2 : 1);
+        progress.Fraction += fraction;
+
+        LogInfo("Fetch for all repositories - Started");
+
+        List<Task> tasks = [];
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        foreach (var repositoryNode in _repositoryTree.Objects ?? [])
+        {
             if (repositoryNode is null
-                || repositoryNode.Status?.IsDirty == true
-                || !repositoryNode.CurrentRepositoryHeadIsBehind
-                || repositoryNode.HasError)
+                || repositoryNode is not RepositoryNode)
             {
-                if (repositoryNode?.Status?.IsDirty == true)
-                {
-                    RepositoryManager.LogError($"Pull for {repositoryNode.RepositoryName} - Error: Repository is dirty");
-                }
-
-                return Task.FromResult(TimeSpan.Zero);
+                continue;
             }
 
-            repositoryNode!.HasError = false;
-            repositoryNode!.IsUpdating = true;
-
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            try
-            {
-                RepositoryActions.Pull(repositoryNode!.Repository);
-            }
-            catch (Exception ex)
-            {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Pull for {repositoryNode.RepositoryName} - Error: {ex.Message}");
-            }
-            finally
-            {
-                stopwatch.Stop();
-                repositoryNode!.IsUpdating = false;
-
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
-
-            if (!repositoryNode!.HasError)
-            {
-                RepositoryManager.LogInfo($"Pull for {repositoryNode.RepositoryName} - Complete: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-
-            return Task.FromResult(stopwatch.Elapsed);
+            tasks.Add(Task.Run(async () => await FetchForSelectedRepositoryHandler(repositoryNode)));
         }
 
-        internal static async Task PullForAllRepositories(TreeView tree)
+        progress.Fraction += fraction;
+
+        if (tasks.Count is 0)
         {
-            RepositoryManager.LogInfo("Pull for all repositories - Started");
+            LogInfo("Fetch for all repositories - Skipped");
 
-            var tasks = new List<Task>();
-
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            foreach (var repositoryNode in tree.Objects)
+            if (split is false)
             {
-                if (repositoryNode is null
-                    || repositoryNode is not RepositoryNode)
-                {
-                    continue;
-                }
-
-                tasks.Add(Task.Run(() => PullForSelectedRepository(tree, repositoryNode)));
+                progress.Fraction = 1f;
             }
 
-            if (tasks.Count is 0)
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.WhenAll(tasks);
-
-                stopwatch.Stop();
-
-                RepositoryManager.LogInfo($"Pull for all repositories - Complete: {tree.Objects.Count()} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-            catch (Exception ex)
-            {
-                RepositoryManager.LogError($"Pull for all repositories - Error: {ex.Message}");
-            }
+            return;
         }
 
-        internal static Task<TimeSpan> FetchForSelectedRepository(TreeView tree, ITreeNode? repositoryTreeNode = null)
+        fraction = ((1f / (split is true ? 2 : 1)) - progress.Fraction) / tasks.Count;
+
+        try
         {
-            var selected = repositoryTreeNode ?? tree.SelectedObject;
-
-            var repositoryNode = GetRepositoryNode(tree, selected);
-
-            if (repositoryNode is null)
+            await foreach (Task<TimeSpan> completedTask in Task.WhenEach(tasks))
             {
-                return Task.FromResult(TimeSpan.Zero);
+                _ = await completedTask;
+                progress.Fraction += fraction;
             }
 
-            repositoryNode!.HasError = false;
-            repositoryNode!.IsUpdating = true;
+            stopwatch.Stop();
 
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            try
-            {
-                RepositoryActions.Fetch(repositoryNode!.Repository);
-            }
-            catch (Exception ex)
-            {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Fetch for {repositoryNode.RepositoryName} - Error: {ex.Message}");
-            }
-            finally
-            {
-                stopwatch.Stop();
-                repositoryNode!.IsUpdating = false;
-
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
-
-            if (!repositoryNode!.HasError)
-            {
-                RepositoryManager.LogInfo($"Fetch for {repositoryNode.RepositoryName} - Complete: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-
-            return Task.FromResult(stopwatch.Elapsed);
+            LogInfo($"Fetch for all repositories - Complete: {_repositoryTree.Objects?.Count() ?? 0} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Fetch for all repositories - Error: {ex.Message}");
         }
 
-        internal static async Task FetchForAllRepositories(TreeView tree)
+        if (split is false)
         {
-            RepositoryManager.LogInfo("Fetch for all repositories - Started");
+            progress.Fraction = 1f;
+        }
+    }
 
-            var tasks = new List<Task>();
+    private Task<TimeSpan> RetrieveStatusForSelectedRepositoryHandler(ITreeNode? repositoryTreeNode = null, ProgressBar? progress = null)
+    {
+        const float fraction = 1f / 3;
+        progress?.Fraction += fraction;
 
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
+        var selected = repositoryTreeNode ?? _repositoryTree.SelectedObject;
 
-            foreach (var repositoryNode in tree.Objects)
-            {
-                if (repositoryNode is null
-                    || repositoryNode is not RepositoryNode)
-                {
-                    continue;
-                }
+        var repositoryNode = GetRepositoryNode(selected);
 
-                tasks.Add(Task.Run(() => FetchForSelectedRepository(tree, repositoryNode)));
-            }
+        if (repositoryNode is null)
+        {
+            progress?.Fraction = 1f;
 
-            if (tasks.Count is 0)
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.WhenAll(tasks);
-
-                stopwatch.Stop();
-
-                RepositoryManager.LogInfo($"Fetch for all repositories - Complete: {tree.Objects.Count()} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-            catch (Exception ex)
-            {
-                RepositoryManager.LogError($"Fetch for all repositories - Error: {ex.Message}");
-            }
+            return Task.FromResult(TimeSpan.Zero);
         }
 
-        internal static Task<TimeSpan> RetrieveStatusForSelectedRepository(TreeView tree, ITreeNode? repositoryTreeNode = null)
+        progress?.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+        repositoryNode!.IsUpdating = true;
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        try
         {
-            var selected = repositoryTreeNode ?? tree.SelectedObject;
+            repositoryNode.Status = RepositoryActions.RetrieveStatus(repositoryNode.Repository);
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Retrieve status for {repositoryNode.RepositoryName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            stopwatch.Stop();
+            repositoryNode!.IsUpdating = false;
 
-            var repositoryNode = GetRepositoryNode(tree, selected);
+            progress?.Fraction += fraction;
 
-            if (repositoryNode is null)
-            {
-                return Task.FromResult(TimeSpan.Zero);
-            }
-
-            repositoryNode!.HasError = false;
-            repositoryNode!.IsUpdating = true;
-
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            try
-            {
-                repositoryNode.Status = RepositoryActions.RetrieveStatus(repositoryNode.Repository);
-            }
-            catch (Exception ex)
-            {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Retrieve status for {repositoryNode.RepositoryName} - Error: {ex.Message}");
-            }
-            finally
-            {
-                stopwatch.Stop();
-                repositoryNode!.IsUpdating = false;
-
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
-
-            if (!repositoryNode!.HasError)
-            {
-                RepositoryManager.LogInfo($"Retrieve status for {repositoryNode.RepositoryName} - Completed: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-
-            return Task.FromResult(stopwatch.Elapsed);
+            _repositoryTree.RefreshObject(repositoryNode);
         }
 
-        internal static async Task RetrieveStatusForAllRepositories(TreeView tree)
+        if (!repositoryNode!.HasError)
         {
-            RepositoryManager.LogInfo("Retrieve status for all repositories - Started");
-
-            var tasks = new List<Task>();
-
-            var stopwatch = new Stopwatch();
-            stopwatch.Start();
-
-            foreach (var repositoryNode in tree.Objects)
-            {
-                if (repositoryNode is null
-                    || repositoryNode is not RepositoryNode)
-                {
-                    continue;
-                }
-
-                tasks.Add(Task.Run(() => RetrieveStatusForSelectedRepository(tree, repositoryNode)));
-            }
-
-            if (tasks.Count is 0)
-            {
-                return;
-            }
-
-            try
-            {
-                await Task.WhenAll(tasks);
-
-                stopwatch.Stop();
-
-                RepositoryManager.LogInfo($"Retrieve status for all repositories - Complete: {tree.Objects.Count()} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
-            }
-            catch (Exception ex)
-            {
-                RepositoryManager.LogError($"Retrieve status for all repositories - Error: {ex.Message}");
-            }
+            LogInfo($"Retrieve status for {repositoryNode.RepositoryName} - Completed: {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
         }
 
-        internal static Task CheckoutSelectedBranch(TreeView tree)
+        progress?.Fraction = 1f;
+
+        return Task.FromResult(stopwatch.Elapsed);
+    }
+
+    private async Task RetrieveStatusForAllRepositoriesHandler(ProgressBar progress)
+    {
+        float fraction = 0.1f;
+        progress.Fraction += fraction;
+
+        LogInfo("Retrieve status for all repositories - Started");
+
+        List<Task> tasks = [];
+
+        var stopwatch = new Stopwatch();
+        stopwatch.Start();
+
+        foreach (var repositoryNode in _repositoryTree.Objects ?? [])
         {
-            var selectedNode = tree.SelectedObject;
-
-            if (selectedNode is not BranchNode
-                || !tree.IsExpanded(tree.GetParent(selectedNode))
-                || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
+            if (repositoryNode is null
+                || repositoryNode is not RepositoryNode)
             {
-                if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
-                {
-                    RepositoryManager.LogError($"Checkout branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Branch already checked-out");
-                }
-
-                return Task.CompletedTask;
+                continue;
             }
 
-            var repositoryNode = GetRepositoryNode(tree, selectedNode);
+            tasks.Add(Task.Run(async () => await RetrieveStatusForSelectedRepositoryHandler(repositoryNode)));
+        }
 
-            if (repositoryNode is null)
+        progress.Fraction += fraction;
+
+        if (tasks.Count is 0)
+        {
+            LogInfo("Retrieve status for all repositories - Skipped");
+
+            progress.Fraction = 1f;
+
+            return;
+        }
+
+        fraction = (1f - progress.Fraction) / tasks.Count;
+
+        try
+        {
+            await foreach (Task<TimeSpan> completedTask in Task.WhenEach(tasks))
             {
-                return Task.CompletedTask;
+                _ = await completedTask;
+                progress.Fraction += fraction;
             }
 
-            repositoryNode!.HasError = false;
+            stopwatch.Stop();
 
-            var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
+            LogInfo($"Retrieve status for all repositories - Complete: {_repositoryTree.Objects?.Count() ?? 0} repositories in {stopwatch.Elapsed:hh\\:mm\\:ss\\.ffff}");
+        }
+        catch (Exception ex)
+        {
+            LogError($"Retrieve status for all repositories - Error: {ex.Message}");
+        }
 
-            try
-            {
-                LibGit2Sharp.Commands.Checkout(repositoryNode.Repository, branch);
+        progress.Fraction = 1f;
+    }
 
-                RepositoryManager.LogInfo($"Checkout branch {branch.FriendlyName} - Completed");
-            }
-            catch (Exception ex)
+    private Task CheckoutSelectedBranchHandler(ProgressBar? progress)
+    {
+        const float fraction = 1f / 5;
+        progress?.Fraction += fraction;
+
+        var selectedNode = _repositoryTree.SelectedObject;
+
+        if (selectedNode is not BranchNode
+            || !_repositoryTree.IsExpanded(_repositoryTree.GetParent(selectedNode))
+            || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
+        {
+            if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
             {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Checkout branch {branch.FriendlyName} - Error: {ex.Message}");
+                LogError($"Checkout branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Branch already checked-out");
             }
-            finally
-            {
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
+
+            progress?.Fraction = 1f;
 
             return Task.CompletedTask;
         }
 
-        internal static Task DeleteSelectedBranch(TreeView tree)
+        progress?.Fraction += fraction;
+
+        var repositoryNode = GetRepositoryNode(selectedNode);
+
+        if (repositoryNode is null)
         {
-            var selectedNode = tree.SelectedObject;
-
-            if (selectedNode is not BranchNode
-                || !tree.IsExpanded(tree.GetParent(selectedNode))
-                || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
-            {
-                if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
-                {
-                    RepositoryManager.LogError($"Delete branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Cannot delete branch while it is the repository HEAD");
-                }
-
-                return Task.CompletedTask;
-            }
-
-            var repositoryNode = GetRepositoryNode(tree, selectedNode);
-
-            if (repositoryNode is null)
-            {
-                return Task.CompletedTask;
-            }
-
-            repositoryNode!.HasError = false;
-
-            var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
-
-            try
-            {
-                repositoryNode.Repository.Branches.Remove(branch);
-
-                RepositoryManager.LogInfo($"Delete branch {branch.FriendlyName} - Completed");
-            }
-            catch (Exception ex)
-            {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Delete branch {branch.FriendlyName} - Error: {ex.Message}");
-            }
-            finally
-            {
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
+            progress?.Fraction = 1f;
 
             return Task.CompletedTask;
         }
 
-        internal static Task ResetSelectedBranch(TreeView tree)
+        progress?.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+
+        var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
+
+        progress?.Fraction += fraction;
+
+        try
         {
-            var selectedNode = tree.SelectedObject;
+            LibGit2Sharp.Commands.Checkout(repositoryNode.Repository, branch);
 
-            if (selectedNode is not BranchNode
-                || !tree.IsExpanded(tree.GetParent(selectedNode))
-                || !(selectedNode as BranchNode)!.IsCurrentRepositoryHead)
+            LogInfo($"Checkout branch {branch.FriendlyName} - Completed");
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Checkout branch {branch.FriendlyName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            progress?.Fraction += fraction;
+            _repositoryTree.RefreshObject(repositoryNode);
+        }
+
+        progress?.Fraction = 1f;
+
+        return Task.CompletedTask;
+    }
+
+    private Task DeleteSelectedBranchHandler(ProgressBar progress)
+    {
+        const float fraction = 1f / 5;
+        progress.Fraction += fraction;
+
+        var selectedNode = _repositoryTree.SelectedObject;
+
+        if (selectedNode is not BranchNode
+            || _repositoryTree.IsExpanded(_repositoryTree.GetParent(selectedNode)) == false
+            || (selectedNode as BranchNode)!.IsCurrentRepositoryHead)
+        {
+            if (selectedNode is BranchNode { IsCurrentRepositoryHead: true })
             {
-                return Task.CompletedTask;
+                LogError($"Delete branch {(selectedNode as BranchNode)!.FriendlyName} - Error: Cannot delete branch while it is the repository HEAD");
             }
 
-            var repositoryNode = GetRepositoryNode(tree, selectedNode);
-
-            if (repositoryNode is null)
-            {
-                return Task.CompletedTask;
-            }
-
-            repositoryNode!.HasError = false;
-
-            var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
-
-            try
-            {
-                RepositoryActions.Reset(repositoryNode.Repository, branch.Tip);
-                repositoryNode.Status = RepositoryActions.RetrieveStatus(repositoryNode.Repository);
-
-                RepositoryManager.LogInfo($"Reset branch {branch.FriendlyName} - Completed");
-            }
-            catch (Exception ex)
-            {
-                repositoryNode!.HasError = true;
-                repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
-                RepositoryManager.LogError($"Reset branch {branch.FriendlyName} - Error: {ex.Message}");
-            }
-            finally
-            {
-                Application.MainLoop.Invoke(() => tree.RefreshObject(repositoryNode));
-            }
+            progress.Fraction = 1f;
 
             return Task.CompletedTask;
         }
 
-        internal static void CopySelectedRepositoryPathToClipboard(TreeView tree)
+        progress.Fraction += fraction;
+
+        var repositoryNode = GetRepositoryNode(selectedNode);
+
+        if (repositoryNode is null)
         {
-            var repositoryNode = GetRepositoryNode(tree, tree.SelectedObject);
+            progress.Fraction = 1f;
 
-            if (repositoryNode is null)
-            {
-                return;
-            }
-
-            Clipboard.TrySetClipboardData(Path.GetDirectoryName(repositoryNode.Repository.Info.WorkingDirectory)!);
+            return Task.CompletedTask;
         }
 
-        private static string GetTrimmedErrorMessage(string errorMessage)
+        progress.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+
+        var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
+
+        progress.Fraction += fraction;
+
+        try
         {
-            return errorMessage.Length <= 50
-                ? errorMessage
-                : errorMessage[..47] + "...";
+            repositoryNode.Repository.Branches.Remove(branch);
+
+            LogInfo($"Delete branch {branch.FriendlyName} - Completed");
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Delete branch {branch.FriendlyName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            progress.Fraction += fraction;
+
+            _repositoryTree.RefreshObject(repositoryNode);
         }
 
-        private static RepositoryNode? GetRepositoryNode(TreeView tree, ITreeNode? treeNode)
+        progress.Fraction = 1f;
+
+        return Task.CompletedTask;
+    }
+
+    private Task ResetSelectedBranchHandler(ProgressBar progress, Action? filter = null)
+    {
+        float fraction = 1f / (filter is null ? 5 : 6);
+        progress.Fraction += fraction;
+
+        var selectedNode = _repositoryTree.SelectedObject;
+
+        if (selectedNode is not BranchNode
+            || !_repositoryTree.IsExpanded(_repositoryTree.GetParent(selectedNode))
+            || !(selectedNode as BranchNode)!.IsCurrentRepositoryHead)
         {
-            if (treeNode is RepositoryNode)
-            {
-                return treeNode as RepositoryNode;
-            }
+            progress.Fraction = 1f;
 
-            if (treeNode is not BranchNode
-                || !tree.IsExpanded(tree.GetParent(treeNode)))
-            {
-                return null;
-            }
-
-            var parent = tree!.GetParent(treeNode);
-            return parent as RepositoryNode;
+            return Task.CompletedTask;
         }
+
+        progress.Fraction += fraction;
+
+        var repositoryNode = GetRepositoryNode(selectedNode);
+
+        if (repositoryNode is null)
+        {
+            progress.Fraction = 1f;
+
+            return Task.CompletedTask;
+        }
+
+        progress.Fraction += fraction;
+
+        repositoryNode!.HasError = false;
+
+        var branch = repositoryNode.Repository.Branches.First(branch => branch.FriendlyName == (selectedNode as BranchNode)!.FriendlyName);
+
+        progress.Fraction += fraction;
+
+        try
+        {
+            RepositoryActions.Reset(repositoryNode.Repository, branch.Tip);
+            repositoryNode.Status = RepositoryActions.RetrieveStatus(repositoryNode.Repository);
+
+            LogInfo($"Reset branch {branch.FriendlyName} - Completed");
+        }
+        catch (Exception ex)
+        {
+            repositoryNode!.HasError = true;
+            repositoryNode!.ErrorMessage = GetTrimmedErrorMessage(ex.Message);
+            LogError($"Reset branch {branch.FriendlyName} - Error: {ex.Message}");
+        }
+        finally
+        {
+            progress.Fraction += fraction;
+
+            _repositoryTree.RefreshObject(repositoryNode);
+        }
+
+        if (filter is not null)
+        {
+            progress.Fraction += fraction;
+
+            filter();
+        }
+
+        progress.Fraction = 1f;
+
+        return Task.CompletedTask;
+    }
+
+    private void CopySelectedRepositoryPathToClipboardHandler()
+    {
+        var repositoryNode = GetRepositoryNode(_repositoryTree.SelectedObject);
+
+        if (repositoryNode is null)
+        {
+            return;
+        }
+
+        App!.Clipboard?.TrySetClipboardData(Path.GetDirectoryName(repositoryNode.Repository.Info.WorkingDirectory)!);
+    }
+
+    private static string GetTrimmedErrorMessage(string errorMessage)
+    {
+        return errorMessage.Length <= 50
+            ? errorMessage
+            : errorMessage[..47] + "...";
+    }
+
+    private RepositoryNode? GetRepositoryNode(ITreeNode? treeNode)
+    {
+        if (treeNode is RepositoryNode)
+        {
+            return treeNode as RepositoryNode;
+        }
+
+        if (treeNode is not BranchNode
+            || !_repositoryTree.IsExpanded(_repositoryTree.GetParent(treeNode)))
+        {
+            return null;
+        }
+
+        var parent = _repositoryTree.GetParent(treeNode);
+        return parent as RepositoryNode;
     }
 }

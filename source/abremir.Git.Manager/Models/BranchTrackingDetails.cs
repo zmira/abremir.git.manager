@@ -1,4 +1,3 @@
-﻿namespace abremir.Git.Manager.Models
-{
-    internal record BranchTrackingDetails(int? BehindBy = null, int? AheadBy = null);
-}
+namespace abremir.Git.Manager.Models;
+
+internal record struct BranchTrackingDetails(int? BehindBy = null, int? AheadBy = null);
