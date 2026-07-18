@@ -1,4 +1,3 @@
-﻿namespace abremir.Git.Manager.Models
-{
-    internal record BranchStatus(bool IsDirty, int Added, int Modified, int Removed);
-}
+namespace abremir.Git.Manager.Models;
+
+internal record struct BranchStatus(bool IsDirty, int Added, int Modified, int Removed);

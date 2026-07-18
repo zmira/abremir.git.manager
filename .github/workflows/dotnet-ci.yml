@@ -1,0 +1,25 @@
+name: .NET CI
+
+on:
+  workflow_dispatch:
+
+env:
+  PACKAGE_NAME: abremir.Git.Manager
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10
+
+      - name: Restore dependencies
+        run: dotnet restore source
+
+      - name: Build
+        run: dotnet build source --no-restore --configuration Release

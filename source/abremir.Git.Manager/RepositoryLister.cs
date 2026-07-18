@@ -1,39 +1,38 @@
-﻿using LibGit2Sharp;
+using LibGit2Sharp;
 
-namespace abremir.Git.Manager
+namespace abremir.Git.Manager;
+
+internal static class RepositoryLister
 {
-    internal static class RepositoryLister
+    internal static List<Repository> ListRepos(string baseFolder)
     {
-        internal static List<Repository> ListRepos(string baseFolder)
+        List<Repository> repoList = [];
+
+        if (Repository.IsValid(baseFolder))
         {
-            var repoList = new List<Repository>();
+            var repository = new Repository(baseFolder);
 
-            if (Repository.IsValid(baseFolder))
+            if (repository.Info.IsBare
+                || repository.Info.IsHeadUnborn
+                || repository.Info.IsHeadDetached
+                || repository.Head.IsRemote
+                || !repository.Head.IsTracking)
             {
-                var repository = new Repository(baseFolder);
-
-                if (repository.Info.IsBare
-                    || repository.Info.IsHeadUnborn
-                    || repository.Info.IsHeadDetached
-                    || repository.Head.IsRemote
-                    || !repository.Head.IsTracking)
-                {
-                    return repoList;
-                }
-
-                repoList.Add(repository);
-
                 return repoList;
             }
 
-            var subdirectories = Directory.GetDirectories(baseFolder, "*", new EnumerationOptions { IgnoreInaccessible = true })
-                .Where(directory => !Path.GetFileName(directory)!.StartsWith('.'));
-            foreach (var subdirectory in subdirectories ?? [])
-            {
-                repoList.AddRange(ListRepos(subdirectory));
-            }
+            repoList.Add(repository);
 
             return repoList;
         }
+
+        var subdirectories = Directory.GetDirectories(baseFolder, "*", new EnumerationOptions { IgnoreInaccessible = true })
+            .Where(directory => !Path.GetFileName(directory)!.StartsWith('.'));
+        foreach (var subdirectory in subdirectories ?? [])
+        {
+            repoList.AddRange(ListRepos(subdirectory));
+        }
+
+        return repoList;
     }
 }

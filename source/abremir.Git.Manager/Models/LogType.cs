@@ -1,9 +1,8 @@
-﻿namespace abremir.Git.Manager.Models
+namespace abremir.Git.Manager.Models;
+
+internal enum LogType
 {
-    internal enum LogType
-    {
-        Information,
-        Warning,
-        Error
-    }
+    Information,
+    Warning,
+    Error
 }

@@ -1,35 +1,22 @@
-﻿using LibGit2Sharp;
+using LibGit2Sharp;
 
-namespace abremir.Git.Manager.Models
+namespace abremir.Git.Manager.Models;
+
+internal record struct ChangedItem(string Path, ChangeKind Status, string Patch)
 {
-    internal class ChangedItem
-    {
-        public readonly string Path;
-        public readonly string Patch;
-        public readonly ChangeKind Status;
+    public override readonly string ToString() =>
+        GetChangeKindSymbol() + Path;
 
-        public ChangedItem(string path, ChangeKind status, string patch)
+    private readonly string GetChangeKindSymbol() =>
+        Status switch
         {
-            Path = path;
-            Patch = patch;
-            Status = status;
-        }
-
-        public override string ToString()
-        {
-            var changeKind = Status switch
-            {
-                ChangeKind.Renamed => "(R) ",
-                ChangeKind.Deleted => "(D) ",
-                ChangeKind.Modified => "(M) ",
-                ChangeKind.Added => "(A) ",
-                ChangeKind.Copied => "(C) ",
-                ChangeKind.Ignored => "(I) ",
-                ChangeKind.TypeChanged => "(T) ",
-                _ => string.Empty
-            };
-
-            return changeKind + Path;
-        }
-    }
+            ChangeKind.Renamed => "(R) ",
+            ChangeKind.Deleted => "(D) ",
+            ChangeKind.Modified => "(M) ",
+            ChangeKind.Added => "(A) ",
+            ChangeKind.Copied => "(C) ",
+            ChangeKind.Ignored => "(I) ",
+            ChangeKind.TypeChanged => "(T) ",
+            _ => string.Empty
+        };
 }
