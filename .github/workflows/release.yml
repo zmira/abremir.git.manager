@@ -1,0 +1,46 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+env:
+  PACKAGE_NAME: abremir.Git.Manager
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10
+
+      - name: Publish Binaries
+        run: |
+          dotnet publish ./source/${{ env.PACKAGE_NAME }} -c Release -r linux-x64 --self-contained false -o ./publish/linux-x64
+          dotnet publish ./source/${{ env.PACKAGE_NAME }} -c Release -r win-x64 --self-contained false -o ./publish/win-x64
+
+      - name: Package Assets
+        run: |
+          cd ./publish/linux-x64 && zip -r ../../${{ env.PACKAGE_NAME }}-linux-x64.zip . && cd ../..
+          cd ./publish/win-x64 && zip -r ../../${{ env.PACKAGE_NAME }}-win-x64.zip . && cd ../..
+
+      - name: Publish Github Release
+        uses: softprops/action-gh-release@v3
+        with:
+          files: |
+            ${{ env.PACKAGE_NAME }}-linux-x64.zip
+            ${{ env.PACKAGE_NAME }}-win-x64.zip
+          generate_release_notes: true
+          tag_name: ${{ github.ref_name }}
+          name: ${{ github.ref_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
