@@ -1,7 +1,7 @@
 using Terminal.Gui.Input;
 using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal class ScrollableCode : Code
 {

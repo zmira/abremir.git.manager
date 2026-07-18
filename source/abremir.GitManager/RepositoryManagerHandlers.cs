@@ -1,8 +1,8 @@
 using System.Diagnostics;
-using abremir.Git.Manager.Models;
+using abremir.GitManager.Models;
 using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager;
+namespace abremir.GitManager;
 
 internal partial class RepositoryManager
 {

@@ -5,5 +5,5 @@
     <File Path="../README.md" />
     <File Path=".editorconfig" />
   </Folder>
-  <Project Path="abremir.Git.Manager/abremir.Git.Manager.csproj" />
+  <Project Path="abremir.GitManager/abremir.GitManager.csproj" />
 </Solution>

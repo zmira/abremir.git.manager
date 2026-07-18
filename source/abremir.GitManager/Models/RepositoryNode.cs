@@ -1,7 +1,7 @@
 using LibGit2Sharp;
 using Terminal.Gui.Views;
 
-namespace abremir.Git.Manager.Models;
+namespace abremir.GitManager.Models;
 
 internal class RepositoryNode(Repository repository) : TreeNode
 {

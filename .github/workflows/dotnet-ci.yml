@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
 
 env:
-  PACKAGE_NAME: abremir.Git.Manager
+  PACKAGE_NAME: abremir.GitManager
 
 jobs:
   build:
